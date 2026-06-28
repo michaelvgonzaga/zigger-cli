@@ -94,3 +94,5 @@ Project knowledge: `knowledge/[topic].md`. Global: `_knowledgebase/[topic].md`.
 | 2026-06-29 | CLI-only in v1 | Fastest path to value; no UI infrastructure required |
 | 2026-06-29 | M1 repo scanner is filesystem-only | Git history patterns deferred; filesystem summary validates core value proposition |
 | 2026-06-29 | No manifest versioning in v1 | Adds complexity before the format is proven; v2 scope after first real plugin |
+| 2026-06-29 | M1 complete — `zigger scan repo` working | Detects framework, maps directories, extracts deps, outputs Markdown + JSON |
+| 2026-06-29 | `io` threaded through all Io.Dir/File ops — Zig 0.16 requires it | Zig 0.16 replaced std.fs with std.Io; all dir/file ops take io parameter |
