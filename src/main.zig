@@ -1,5 +1,5 @@
 const std = @import("std");
-const zigger_cli = @import("zigger_cli");
+const plowman = @import("plowman");
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -21,7 +21,7 @@ pub fn main(init: std.process.Init) !void {
 
     if (std.mem.eql(u8, args[1], "scan") and std.mem.eql(u8, args[2], "repo")) {
         if (args.len < 4) {
-            try err.print("usage: zigger scan repo <path> [--json]\n", .{});
+            try err.print("usage: plowman scan repo <path> [--json]\n", .{});
             try err.flush();
             std.process.exit(1);
         }
@@ -36,7 +36,7 @@ pub fn main(init: std.process.Init) !void {
         };
         const path = abs_buf[0..path_len];
 
-        var result = zigger_cli.scanRepo(gpa, io, path) catch |e| {
+        var result = plowman.scanRepo(gpa, io, path) catch |e| {
             try err.print("error scanning '{s}': {}\n", .{ path, e });
             try err.flush();
             std.process.exit(1);
@@ -56,7 +56,7 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn printUsage(w: *std.Io.Writer) !void {
-    try w.print("usage: zigger <command> [args]\n", .{});
+    try w.print("usage: plowman <command> [args]\n", .{});
     try w.print("commands:\n", .{});
     try w.print("  scan repo <path> [--json]   scan a repository\n", .{});
     try w.flush();

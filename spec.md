@@ -1,4 +1,4 @@
-# Zigger-CLI Spec
+# Plowman Spec
 
 ---
 
@@ -8,7 +8,7 @@
 
 **Domain:** Developer tooling / CLI
 
-**Success in 30 days:** A developer can run `zigger scan repo <path>` on any codebase and hand the output directly to an AI assistant instead of pointing it at the raw source tree.
+**Success in 30 days:** A developer can run `plowman scan repo <path>` on any codebase and hand the output directly to an AI assistant instead of pointing it at the raw source tree.
 
 **How we'll measure it:** Output a valid, non-empty JSON/Markdown report from a real repo containing architecture type, dependency list, and key file paths — without the AI needing to read raw source files.
 
@@ -20,13 +20,13 @@
 - Repository scanner: detect framework, map folders, find routes/configs/dependencies, output architecture summary
 - SQL dump analyzer: rank largest tables, detect missing indexes, flag cache/session/log tables, suggest bottlenecks
 - Log analyzer: scan error patterns, detect repeat failures, summarize incidents
-- Plugin wrapper: absorb existing CLIs (.sh, Python, Go, Node, Rust, binary) via a YAML manifest; expose as `zigger <domain> <command>` with help, validation, dry-run, and confirmation prompts
+- Plugin wrapper: absorb existing CLIs (.sh, Python, Go, Node, Rust, binary) via a YAML manifest; expose as `plowman <domain> <command>` with help, validation, dry-run, and confirmation prompts
 - Structured output: JSON (AI consumption) + Markdown (human readability), dual format on every command
-- `zigger doctor`: dependency health check
+- `plowman doctor`: dependency health check
 
 **Out (explicitly):**
 - Web UI, cloud hosting, auth, billing
-- Auto-apply recommendations — Zigger diagnoses and recommends; user approves any changes
+- Auto-apply recommendations — Plowman diagnoses and recommends; user approves any changes
 - Auto-reverse-engineering arbitrary scripts (manifest-first approach only)
 - Linux/Windows builds
 - Live database inspection (SQL dump files only in v1)
@@ -36,7 +36,7 @@
 
 ## The simplest version that delivers value
 
-`zigger scan repo <path>` runs against an existing codebase and outputs a Markdown summary: detected framework, key directories, dependency list, and top-level architecture. An AI assistant receives that instead of thousands of raw files. That single command, working reliably, validates the core value proposition.
+`plowman scan repo <path>` runs against an existing codebase and outputs a Markdown summary: detected framework, key directories, dependency list, and top-level architecture. An AI assistant receives that instead of thousands of raw files. That single command, working reliably, validates the core value proposition.
 
 ---
 
@@ -59,6 +59,7 @@
 - [x] Plugin manifest approach — YAML manifest wraps existing CLIs; no auto-reverse-engineering of scripts
 - [x] ripgrep + fd for file scanning — leverage existing best-in-class tools, don't reimplement
 - [x] CLI-only in v1 — no web UI or desktop app
+- [x] Renamed from Zigger-CLI to Plowman
 
 ---
 
@@ -72,7 +73,7 @@
 
 | Milestone | What a user can do | Done when... |
 |-----------|-------------------|--------------|
-| M1 — Repo scanner | `zigger scan repo <path>` → Markdown/JSON report | Output contains detected framework, directory map, and dependency list for a real repo (filesystem-only, no git history) |
-| M2 — DB + log scanners | `zigger scan db <dump.sql>` and `zigger scan log <file>` | Reports include table rankings, bottleneck flags, and top error patterns from real files |
-| M3 — Plugin wrapper | `zigger plugin install <manifest.yml>` + `zigger <domain> <command>` | A real .sh or Python script is wrapped, discoverable, and invocable with help and dry-run |
-| M4 — Hardened | `zigger doctor` + edge cases + error handling | Doctor passes on a clean machine; no unhandled panics on malformed input |
+| M1 — Repo scanner | `plowman scan repo <path>` → Markdown/JSON report | Output contains detected framework, directory map, and dependency list for a real repo (filesystem-only, no git history) |
+| M2 — DB + log scanners | `plowman scan db <dump.sql>` and `plowman scan log <file>` | Reports include table rankings, bottleneck flags, and top error patterns from real files |
+| M3 — Plugin wrapper | `plowman plugin install <manifest.yml>` + `plowman <domain> <command>` | A real .sh or Python script is wrapped, discoverable, and invocable with help and dry-run |
+| M4 — Hardened | `plowman doctor` + edge cases + error handling | Doctor passes on a clean machine; no unhandled panics on malformed input |
