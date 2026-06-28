@@ -45,6 +45,7 @@ See `spec.md` for the full spec. Key facts:
 
 ## Tools & Resources
 
+- **Repo:** https://github.com/michaelvgonzaga/zigger-cli
 - **Platform / runtime:** Zig 0.16 — single binary, macOS arm64
 - **Key tools & services:** ripgrep (file scanning), fd (file discovery), jq (JSON processing); optional: tree-sitter (AST), sqlite3, mysql/psql CLIs
 - **Data & storage:** Local files only — input artifacts and output reports on disk
@@ -84,3 +85,12 @@ Project knowledge: `knowledge/[topic].md`. Global: `_knowledgebase/[topic].md`.
 
 | Date | Decision | Why |
 |------|----------|-----|
+| 2026-06-29 | Zig runtime | Single binary, no runtime deps, fast startup; matches foreman-tools precedent |
+| 2026-06-29 | macOS arm64 only for v1 | Aligns with existing toolchain; Linux/Windows deferred to v2 |
+| 2026-06-29 | Local-only in v1 | No cloud infrastructure needed; keep user artifacts on-machine |
+| 2026-06-29 | Dual output: JSON + Markdown on every command | JSON for AI consumption, Markdown for human readability; one call serves both |
+| 2026-06-29 | Plugin manifest approach (YAML) | Reliable and incremental; no auto-reverse-engineering of arbitrary scripts |
+| 2026-06-29 | ripgrep + fd for file scanning | Best-in-class tools already exist; Zigger orchestrates, doesn't reimplement |
+| 2026-06-29 | CLI-only in v1 | Fastest path to value; no UI infrastructure required |
+| 2026-06-29 | M1 repo scanner is filesystem-only | Git history patterns deferred; filesystem summary validates core value proposition |
+| 2026-06-29 | No manifest versioning in v1 | Adds complexity before the format is proven; v2 scope after first real plugin |

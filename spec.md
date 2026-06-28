@@ -52,20 +52,19 @@
 
 ## Key decisions — requires explicit sign-off
 
-- [ ] Zig runtime — matches foreman-tools precedent; single binary, no runtime deps, fast startup
-- [ ] macOS arm64 only for v1 — aligns with existing toolchain; Linux/Windows deferred to v2
-- [ ] Local-only in v1 — no cloud, no auth, no remote storage
-- [ ] Dual output: JSON (AI consumption) + Markdown (human readability) on every command
-- [ ] Plugin manifest approach — YAML manifest wraps existing CLIs; no auto-reverse-engineering of scripts
-- [ ] ripgrep + fd for file scanning — leverage existing best-in-class tools, don't reimplement
-- [ ] CLI-only in v1 — no web UI or desktop app
+- [x] Zig runtime — matches foreman-tools precedent; single binary, no runtime deps, fast startup
+- [x] macOS arm64 only for v1 — aligns with existing toolchain; Linux/Windows deferred to v2
+- [x] Local-only in v1 — no cloud, no auth, no remote storage
+- [x] Dual output: JSON (AI consumption) + Markdown (human readability) on every command
+- [x] Plugin manifest approach — YAML manifest wraps existing CLIs; no auto-reverse-engineering of scripts
+- [x] ripgrep + fd for file scanning — leverage existing best-in-class tools, don't reimplement
+- [x] CLI-only in v1 — no web UI or desktop app
 
 ---
 
 ## Open questions
 
-- Should `zigger scan repo` detect git history patterns (most changed files, hotspots) or stay filesystem-only for M1?
-- Does the plugin manifest need a versioning scheme in v1, or is that v2 scope?
+- None.
 
 ---
 
@@ -73,7 +72,7 @@
 
 | Milestone | What a user can do | Done when... |
 |-----------|-------------------|--------------|
-| M1 — Repo scanner | `zigger scan repo <path>` → Markdown/JSON report | Output contains detected framework, directory map, and dependency list for a real repo |
+| M1 — Repo scanner | `zigger scan repo <path>` → Markdown/JSON report | Output contains detected framework, directory map, and dependency list for a real repo (filesystem-only, no git history) |
 | M2 — DB + log scanners | `zigger scan db <dump.sql>` and `zigger scan log <file>` | Reports include table rankings, bottleneck flags, and top error patterns from real files |
 | M3 — Plugin wrapper | `zigger plugin install <manifest.yml>` + `zigger <domain> <command>` | A real .sh or Python script is wrapped, discoverable, and invocable with help and dry-run |
 | M4 — Hardened | `zigger doctor` + edge cases + error handling | Doctor passes on a clean machine; no unhandled panics on malformed input |
