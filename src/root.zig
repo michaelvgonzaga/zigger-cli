@@ -1,5 +1,8 @@
 const std = @import("std");
 
+pub const plugin = @import("plugin.zig");
+pub const doctor = @import("doctor.zig");
+
 pub const Framework = enum {
     nodejs,
     python,
