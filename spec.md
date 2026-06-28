@@ -69,7 +69,7 @@
 
 ---
 
-## Milestones
+## Milestones — v1 (complete)
 
 | Milestone | What a user can do | Done when... |
 |-----------|-------------------|--------------|
@@ -77,3 +77,46 @@
 | M2 — DB + log scanners | `plowman scan db <dump.sql>` and `plowman scan log <file>` | Reports include table rankings, bottleneck flags, and top error patterns from real files |
 | M3 — Plugin wrapper | `plowman plugin install <manifest.yml>` + `plowman <domain> <command>` | A real .sh or Python script is wrapped, discoverable, and invocable with help and dry-run |
 | M4 — Hardened | `plowman doctor` + edge cases + error handling | Doctor passes on a clean machine; no unhandled panics on malformed input |
+
+---
+
+## Scope — v2
+
+**In:**
+- Git history analysis added to `scan repo`: hotspots (churn), co-change pairs, stale modules
+- Three signals, 90-day default window, graceful fallback when not in a git repo
+- Output integrated into existing Markdown and JSON report formats
+
+**Out (explicitly):**
+- Per-author blame or attribution data
+- Full commit message analysis or NLP on commit text
+- Cross-repo history comparison
+- Any changes to v1 commands outside of `scan repo`
+
+---
+
+## Risks — v2
+
+- **Git not installed or repo has no history** — must degrade gracefully; omit section rather than error
+- **Large repos with thousands of commits** — 90-day window limits data volume, but parsing could still be slow; may need a commit count cap
+- **Co-change pairs produce false positives on mass-refactor commits** — a single commit touching 200 files skews all pair scores; need a per-commit file-count cutoff
+
+---
+
+## Key decisions — v2
+
+- [x] Parse `git log` output via subprocess (same pattern as plugin runner) — no new deps, works anywhere git is installed
+- [x] 90-day default window — recent enough to reflect current development patterns, short enough to be fast
+- [x] Skip git history section silently when `git` is unavailable or path is not a repo — no flag required; auto-detected
+- [x] Co-change cutoff: ignore commits touching more than 50 files — mass refactors distort pair scores
+- [x] Top 10 hotspots, top 10 co-change pairs, all stale top-level dirs (no arbitrary cap on stale)
+
+---
+
+## Milestones — v2
+
+| Milestone | What a user can do | Done when... |
+|-----------|-------------------|--------------|
+| M1 — Hotspots | `scan repo` on a git repo adds a hotspot table | Top 10 files by commit count in the last 90 days, from a real repo with 30+ commits |
+| M2 — Co-change | Hotspot files show their co-change partners | Top 10 pairs with co-occurrence ≥ 2 commits, from a real repo |
+| M3 — Stale modules | Report flags directories with no recent commits | Top-level dirs show last-touched date; stale (90+ days) flagged in output |

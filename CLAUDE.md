@@ -97,3 +97,5 @@ Project knowledge: `knowledge/[topic].md`. Global: `_knowledgebase/[topic].md`.
 | 2026-06-29 | M1 complete — `plowman scan repo` working | Detects framework, maps directories, extracts deps, outputs Markdown + JSON |
 | 2026-06-29 | `io` threaded through all Io.Dir/File ops — Zig 0.16 requires it | Zig 0.16 replaced std.fs with std.Io; all dir/file ops take io parameter |
 | 2026-06-29 | Renamed from Zigger-CLI to Plowman | Name change; all binary, module, repo, and doc references updated |
+| 2026-06-29 | v2: git history via `git log` subprocess | No new deps; three signals: hotspots, co-change pairs, stale dirs; auto-detected, silent fallback |
+| 2026-06-29 | v2: 90-day window, 50-file per-commit cutoff | Recent enough to reflect active patterns; cutoff prevents mass-refactor commits distorting co-change scores |

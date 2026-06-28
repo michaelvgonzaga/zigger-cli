@@ -2,6 +2,7 @@ const std = @import("std");
 
 pub const plugin = @import("plugin.zig");
 pub const doctor = @import("doctor.zig");
+pub const git = @import("git.zig");
 
 pub const Framework = enum {
     nodejs,
@@ -47,6 +48,7 @@ pub const ScanResult = struct {
     directories: std.ArrayList([]u8),
     dependencies: std.ArrayList(Dependency),
     config_files: std.ArrayList([]u8),
+    git_history: ?git.GitHistoryResult = null,
 
     pub fn deinit(self: *ScanResult, gpa: std.mem.Allocator) void {
         gpa.free(self.path);
@@ -56,6 +58,7 @@ pub const ScanResult = struct {
         self.dependencies.deinit(gpa);
         for (self.config_files.items) |f| gpa.free(f);
         self.config_files.deinit(gpa);
+        if (self.git_history) |*h| h.deinit(gpa);
     }
 
     pub fn writeMarkdown(self: *const ScanResult, out: *std.Io.Writer) !void {
@@ -110,6 +113,8 @@ pub const ScanResult = struct {
         } else {
             try out.print("## Dependencies\n\nNone detected.\n\n", .{});
         }
+
+        if (self.git_history) |*h| try h.writeMarkdown(out);
     }
 
     pub fn writeJson(self: *const ScanResult, out: *std.Io.Writer) !void {
@@ -153,8 +158,12 @@ pub const ScanResult = struct {
             }
         }
         try out.print("]\n", .{});
-        try out.print("  }}\n", .{});
-        try out.print("}}\n", .{});
+        try out.print("  }}", .{});
+        if (self.git_history) |*h| {
+            try out.print(",\n  ", .{});
+            try h.writeJson(out);
+        }
+        try out.print("\n}}\n", .{});
     }
 };
 
@@ -261,6 +270,8 @@ pub fn scanRepo(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !ScanResul
 
     try walkDirs(gpa, io, dir, "", 0, &result);
     try extractDeps(gpa, io, dir, result.framework, &result);
+
+    result.git_history = git.scan(gpa, io, path);
 
     return result;
 }
