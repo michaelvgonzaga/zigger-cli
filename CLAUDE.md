@@ -1,0 +1,86 @@
+# Zigger-CLI
+
+A local CLI context engine that converts codebases, databases, logs, and existing scripts into structured, AI-ready knowledge — so AI assistants reason instead of reading raw files.
+
+---
+
+## Spec
+
+See `spec.md` for the full spec. Key facts:
+
+- **Goal:** Turn raw engineering artifacts into structured JSON/Markdown context that AI coding assistants consume instead of reading raw files
+- **User:** Software engineers, technical leads, and agency teams onboarding AI assistants to complex projects
+- **Domain:** Developer tooling / CLI
+- **v1 scope:** Repo scanner, SQL dump analyzer, log analyzer, plugin wrapper, dual JSON/Markdown output, `zigger doctor`
+- **Out of scope:** Web UI, cloud hosting, auth, billing, auto-apply recommendations, Linux/Windows builds, live DB inspection
+
+---
+
+## Guardrails (project-specific)
+
+### Always do
+- Read `spec.md` before any implementation work
+- Run `/verify-output` before marking tasks complete
+- Keep changes scoped to v1 — do not add features not in the spec
+- Before making domain-specific decisions: read `_knowledgebase/README.md` to find relevant files, then read those files
+- Before starting a new domain or project type: read `_skills/README.md` and apply any relevant playbooks
+- JSON to stdout, errors to stderr, non-zero exit on failure — same contract as foreman-tools
+
+### Ask first
+- Any new subcommand or output field not in the spec
+- Any change to the JSON/Markdown output schema — downstream consumers depend on it
+- Installing, upgrading, or removing dependencies or packages
+- Any operation that writes files outside this project directory
+- Any mid-project scope change — propose it, get sign-off, then update spec.md
+
+### Never do
+- Never write to a production database or live system
+- Never send real messages, emails, or notifications to real users
+- Never auto-apply a recommendation — Zigger diagnoses; user must approve any changes
+- Never make network calls — local filesystem and subprocess only
+- Skip the verifier before marking work done
+- Add scope without updating spec.md and getting explicit sign-off first
+
+---
+
+## Tools & Resources
+
+- **Platform / runtime:** Zig 0.16 — single binary, macOS arm64
+- **Key tools & services:** ripgrep (file scanning), fd (file discovery), jq (JSON processing); optional: tree-sitter (AST), sqlite3, mysql/psql CLIs
+- **Data & storage:** Local files only — input artifacts and output reports on disk
+- **Domain-specific requirements:** None identified
+
+---
+
+## How to execute
+
+```bash
+# setup
+brew install zig ripgrep fd jq
+
+# build
+zig build -Doptimize=ReleaseSafe
+
+# run / work
+./zig-out/bin/zigger scan repo <path>
+./zig-out/bin/zigger scan db <dump.sql>
+./zig-out/bin/zigger scan log <file>
+./zig-out/bin/zigger plugin install <manifest.yml>
+./zig-out/bin/zigger doctor
+
+# validate / test
+zig build test
+```
+
+---
+
+## Knowledgebase
+
+Project knowledge: `knowledge/[topic].md`. Global: `_knowledgebase/[topic].md`.
+
+---
+
+## Decision log
+
+| Date | Decision | Why |
+|------|----------|-----|
