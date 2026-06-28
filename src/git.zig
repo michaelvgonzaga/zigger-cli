@@ -143,11 +143,18 @@ pub fn scan(gpa: std.mem.Allocator, io: std.Io, repo_path: []const u8) ?GitHisto
 }
 
 fn isGitRepo(io: std.Io, repo_path: []const u8, gpa: std.mem.Allocator) bool {
-    const git_path = std.fmt.allocPrint(gpa, "{s}/.git", .{repo_path}) catch return false;
-    defer gpa.free(git_path);
-    const d = std.Io.Dir.openDirAbsolute(io, git_path, .{}) catch return false;
-    d.close(io);
-    return true;
+    // Use git itself so worktrees (.git is a file, not a dir) are handled correctly.
+    const result = std.process.run(gpa, io, .{
+        .argv = &[_][]const u8{ "git", "-C", repo_path, "rev-parse", "--git-dir" },
+        .stdout_limit = std.Io.Limit.limited(256),
+        .stderr_limit = std.Io.Limit.limited(256),
+    }) catch return false;
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+    return switch (result.term) {
+        .exited => |c| c == 0,
+        else => false,
+    };
 }
 
 fn scanInner(gpa: std.mem.Allocator, io: std.Io, repo_path: []const u8) !GitHistoryResult {
