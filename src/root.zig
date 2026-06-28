@@ -444,3 +444,721 @@ test "framework detection order: nodejs beats python" {
     try std.testing.expectEqual(Framework.nodejs, FRAMEWORK_INDICATORS[0].fw);
     try std.testing.expectEqual(@as([]const u8, "package.json"), FRAMEWORK_INDICATORS[0].file);
 }
+
+// ============================================================
+// Shared helpers
+// ============================================================
+
+fn writeJsonStr(out: *std.Io.Writer, s: []const u8) !void {
+    for (s) |c| {
+        switch (c) {
+            '"' => try out.writeAll("\\\""),
+            '\\' => try out.writeAll("\\\\"),
+            '\n' => try out.writeAll("\\n"),
+            '\r' => try out.writeAll("\\r"),
+            '\t' => try out.writeAll("\\t"),
+            else => try out.writeByte(c),
+        }
+    }
+}
+
+fn fileBasename(path: []const u8) []const u8 {
+    if (std.mem.lastIndexOfScalar(u8, path, '/')) |i| return path[i + 1 ..];
+    return path;
+}
+
+fn startsWithCI(s: []const u8, prefix: []const u8) bool {
+    if (s.len < prefix.len) return false;
+    for (prefix, 0..) |p, i| {
+        if (std.ascii.toLower(s[i]) != std.ascii.toLower(p)) return false;
+    }
+    return true;
+}
+
+// ============================================================
+// DB SCANNER
+// ============================================================
+
+pub const DbDialect = enum {
+    mysql,
+    postgresql,
+    sqlite,
+    unknown,
+
+    pub fn displayName(self: DbDialect) []const u8 {
+        return switch (self) {
+            .mysql => "MySQL",
+            .postgresql => "PostgreSQL",
+            .sqlite => "SQLite",
+            .unknown => "Unknown",
+        };
+    }
+};
+
+pub const TableInfo = struct {
+    name: []u8,
+    row_estimate: u64,
+    has_primary_key: bool,
+    index_count: u32,
+    is_cache_or_session: bool,
+    is_log_or_audit: bool,
+
+    fn deinit(self: *TableInfo, gpa: std.mem.Allocator) void {
+        gpa.free(self.name);
+    }
+};
+
+pub const DbScanResult = struct {
+    path: []u8,
+    dialect: DbDialect,
+    tables: std.ArrayList(TableInfo),
+
+    pub fn deinit(self: *DbScanResult, gpa: std.mem.Allocator) void {
+        gpa.free(self.path);
+        for (self.tables.items) |*t| t.deinit(gpa);
+        self.tables.deinit(gpa);
+    }
+
+    pub fn writeMarkdown(self: *const DbScanResult, out: *std.Io.Writer) !void {
+        try out.print("# DB Analysis: {s}\n\n", .{fileBasename(self.path)});
+
+        var total_rows: u64 = 0;
+        for (self.tables.items) |t| total_rows += t.row_estimate;
+
+        try out.print("## Overview\n\n", .{});
+        try out.print("- **Dialect:** {s}\n", .{self.dialect.displayName()});
+        try out.print("- **Tables:** {d}\n", .{self.tables.items.len});
+        try out.print("- **Estimated rows:** {d}\n\n", .{total_rows});
+
+        if (self.tables.items.len > 0) {
+            try out.print("## Tables (ranked by estimated size)\n\n", .{});
+            try out.print("| Table | Est. Rows | Primary Key | Indexes | Flags |\n", .{});
+            try out.print("|-------|-----------|-------------|---------|-------|\n", .{});
+            for (self.tables.items) |t| {
+                const flags: []const u8 = blk: {
+                    if (t.is_cache_or_session and t.is_log_or_audit) break :blk "cache/session, log/audit";
+                    if (t.is_cache_or_session) break :blk "cache/session";
+                    if (t.is_log_or_audit) break :blk "log/audit";
+                    break :blk "—";
+                };
+                try out.print("| {s} | {d} | {s} | {d} | {s} |\n", .{
+                    t.name,
+                    t.row_estimate,
+                    if (t.has_primary_key) "yes" else "no",
+                    t.index_count,
+                    flags,
+                });
+            }
+            try out.print("\n", .{});
+        }
+
+        var has_issues = false;
+        for (self.tables.items) |t| {
+            if (!t.has_primary_key or t.index_count == 0 or t.is_cache_or_session or t.is_log_or_audit) {
+                has_issues = true;
+                break;
+            }
+        }
+
+        if (has_issues) {
+            try out.print("## Issues\n\n", .{});
+            {
+                var any = false;
+                for (self.tables.items) |t| {
+                    if (!t.has_primary_key) { any = true; break; }
+                }
+                if (any) {
+                    try out.print("### No primary key\n\n", .{});
+                    for (self.tables.items) |t| {
+                        if (!t.has_primary_key) try out.print("- `{s}` — full table scans on lookups\n", .{t.name});
+                    }
+                    try out.print("\n", .{});
+                }
+            }
+            {
+                var any = false;
+                for (self.tables.items) |t| {
+                    if (t.index_count == 0) { any = true; break; }
+                }
+                if (any) {
+                    try out.print("### No indexes\n\n", .{});
+                    for (self.tables.items) |t| {
+                        if (t.index_count == 0) try out.print("- `{s}` — all queries do full table scans\n", .{t.name});
+                    }
+                    try out.print("\n", .{});
+                }
+            }
+            {
+                var any = false;
+                for (self.tables.items) |t| {
+                    if (t.is_cache_or_session) { any = true; break; }
+                }
+                if (any) {
+                    try out.print("### Cache/session tables\n\n", .{});
+                    for (self.tables.items) |t| {
+                        if (t.is_cache_or_session) try out.print("- `{s}` — consider Redis or Memcached\n", .{t.name});
+                    }
+                    try out.print("\n", .{});
+                }
+            }
+            {
+                var any = false;
+                for (self.tables.items) |t| {
+                    if (t.is_log_or_audit) { any = true; break; }
+                }
+                if (any) {
+                    try out.print("### Log/audit tables\n\n", .{});
+                    for (self.tables.items) |t| {
+                        if (t.is_log_or_audit) try out.print("- `{s}` — index by timestamp; archive old rows\n", .{t.name});
+                    }
+                    try out.print("\n", .{});
+                }
+            }
+        }
+    }
+
+    pub fn writeJson(self: *const DbScanResult, out: *std.Io.Writer) !void {
+        var total_rows: u64 = 0;
+        for (self.tables.items) |t| total_rows += t.row_estimate;
+
+        try out.print("{{\n", .{});
+        try out.print("  \"path\": \"", .{});
+        try writeJsonStr(out, self.path);
+        try out.print("\",\n", .{});
+        try out.print("  \"dialect\": \"{s}\",\n", .{self.dialect.displayName()});
+        try out.print("  \"tableCount\": {d},\n", .{self.tables.items.len});
+        try out.print("  \"estimatedRows\": {d},\n", .{total_rows});
+        try out.print("  \"tables\": [\n", .{});
+        for (self.tables.items, 0..) |t, i| {
+            try out.print("    {{\"name\": \"", .{});
+            try writeJsonStr(out, t.name);
+            try out.print("\", \"rowEstimate\": {d}, \"hasPrimaryKey\": {s}, \"indexCount\": {d}, \"isCacheOrSession\": {s}, \"isLogOrAudit\": {s}}}", .{
+                t.row_estimate,
+                if (t.has_primary_key) "true" else "false",
+                t.index_count,
+                if (t.is_cache_or_session) "true" else "false",
+                if (t.is_log_or_audit) "true" else "false",
+            });
+            if (i + 1 < self.tables.items.len) try out.print(",", .{});
+            try out.print("\n", .{});
+        }
+        try out.print("  ],\n", .{});
+        try out.print("  \"issues\": {{\n", .{});
+
+        const issue_lists = [_]struct { key: []const u8, field: enum { nopk, noidx, cache, log } }{
+            .{ .key = "noPrimaryKey", .field = .nopk },
+            .{ .key = "noIndexes", .field = .noidx },
+            .{ .key = "cacheOrSession", .field = .cache },
+            .{ .key = "logOrAudit", .field = .log },
+        };
+        for (issue_lists, 0..) |il, li| {
+            try out.print("    \"{s}\": [", .{il.key});
+            var first = true;
+            for (self.tables.items) |t| {
+                const match = switch (il.field) {
+                    .nopk => !t.has_primary_key,
+                    .noidx => t.index_count == 0,
+                    .cache => t.is_cache_or_session,
+                    .log => t.is_log_or_audit,
+                };
+                if (match) {
+                    if (!first) try out.print(", ", .{});
+                    try out.print("\"", .{});
+                    try writeJsonStr(out, t.name);
+                    try out.print("\"", .{});
+                    first = false;
+                }
+            }
+            if (li + 1 < issue_lists.len) {
+                try out.print("],\n", .{});
+            } else {
+                try out.print("]\n", .{});
+            }
+        }
+        try out.print("  }}\n", .{});
+        try out.print("}}\n", .{});
+    }
+};
+
+pub fn scanDb(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !DbScanResult {
+    const stored_path = try gpa.dupe(u8, path);
+    errdefer gpa.free(stored_path);
+
+    const file = try std.Io.Dir.openFileAbsolute(io, path, .{});
+    defer file.close(io);
+    var read_buf: [4096]u8 = undefined;
+    var r = file.reader(io, &read_buf);
+    const content = try r.interface.allocRemaining(gpa, .limited(50 * 1024 * 1024));
+    defer gpa.free(content);
+
+    var result = DbScanResult{
+        .path = stored_path,
+        .dialect = .unknown,
+        .tables = .empty,
+    };
+    var in_table = false;
+    var in_copy = false;
+    var current: TableInfo = undefined;
+    var copy_table_idx: usize = 0;
+
+    errdefer {
+        if (in_table) gpa.free(current.name);
+        for (result.tables.items) |*t| t.deinit(gpa);
+        result.tables.deinit(gpa);
+    }
+
+    var lines_iter = std.mem.splitScalar(u8, content, '\n');
+    while (lines_iter.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+
+        // Dialect hints
+        if (std.mem.indexOf(u8, trimmed, "-- MySQL dump") != null or
+            std.mem.indexOf(u8, trimmed, "ENGINE=InnoDB") != null or
+            std.mem.indexOf(u8, trimmed, "ENGINE=MyISAM") != null)
+        {
+            result.dialect = .mysql;
+        }
+        if (result.dialect != .mysql and
+            (std.mem.indexOf(u8, trimmed, "-- PostgreSQL database dump") != null or
+             std.mem.indexOf(u8, trimmed, "-- Dumped from database version") != null))
+        {
+            result.dialect = .postgresql;
+        }
+        if (result.dialect == .unknown and
+            (std.mem.indexOf(u8, trimmed, "PRAGMA ") != null or
+             std.mem.eql(u8, trimmed, ".dump")))
+        {
+            result.dialect = .sqlite;
+        }
+
+        if (in_copy) {
+            if (std.mem.eql(u8, trimmed, "\\.")) {
+                in_copy = false;
+            } else {
+                result.tables.items[copy_table_idx].row_estimate += 1;
+            }
+            continue;
+        }
+
+        if (in_table) {
+            if (std.mem.indexOf(u8, trimmed, "PRIMARY KEY") != null) current.has_primary_key = true;
+            if (startsWithCI(trimmed, "KEY ") or startsWithCI(trimmed, "UNIQUE KEY") or
+                startsWithCI(trimmed, "INDEX ") or startsWithCI(trimmed, "UNIQUE INDEX"))
+            {
+                current.index_count += 1;
+            }
+            if (trimmed[0] == ')') {
+                in_table = false;
+                classifyTable(&current);
+                try result.tables.append(gpa, current);
+            }
+            continue;
+        }
+
+        if (startsWithCI(trimmed, "CREATE TABLE")) {
+            if (extractCreateTableName(trimmed)) |raw| {
+                if (raw.len > 0) {
+                    if (in_table) gpa.free(current.name);
+                    const name = try gpa.dupe(u8, raw);
+                    in_table = true;
+                    current = .{
+                        .name = name,
+                        .row_estimate = 0,
+                        .has_primary_key = false,
+                        .index_count = 0,
+                        .is_cache_or_session = false,
+                        .is_log_or_audit = false,
+                    };
+                }
+            }
+            continue;
+        }
+
+        if (startsWithCI(trimmed, "INSERT INTO ")) {
+            if (extractInsertTableName(trimmed)) |name| {
+                for (result.tables.items) |*t| {
+                    if (std.mem.eql(u8, t.name, name)) { t.row_estimate += 1; break; }
+                }
+            }
+            continue;
+        }
+
+        if (startsWithCI(trimmed, "COPY ") and std.mem.indexOf(u8, trimmed, "FROM stdin") != null) {
+            if (extractCopyTableName(trimmed)) |name| {
+                for (result.tables.items, 0..) |t, idx| {
+                    if (std.mem.eql(u8, t.name, name)) {
+                        copy_table_idx = idx;
+                        in_copy = true;
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+    }
+
+    if (in_table) {
+        gpa.free(current.name);
+        in_table = false;
+    }
+
+    std.mem.sort(TableInfo, result.tables.items, {}, struct {
+        fn gt(_: void, a: TableInfo, b: TableInfo) bool {
+            return a.row_estimate > b.row_estimate;
+        }
+    }.gt);
+
+    return result;
+}
+
+fn extractCreateTableName(line: []const u8) ?[]const u8 {
+    var rest = line;
+    if (!startsWithCI(rest, "CREATE TABLE")) return null;
+    rest = rest["CREATE TABLE".len..];
+    rest = std.mem.trimStart(u8, rest, " \t");
+    if (startsWithCI(rest, "IF NOT EXISTS")) rest = rest["IF NOT EXISTS".len..];
+    rest = std.mem.trimStart(u8, rest, " \t");
+    if (rest.len == 0) return null;
+
+    if (rest[0] == '`' or rest[0] == '"' or rest[0] == '\'') {
+        const q = rest[0];
+        rest = rest[1..];
+        const end = std.mem.indexOfScalar(u8, rest, q) orelse return null;
+        return if (end > 0) rest[0..end] else null;
+    }
+
+    const end = for (rest, 0..) |c, i| {
+        if (c == ' ' or c == '\t' or c == '(' or c == '\n' or c == '\r') break i;
+    } else rest.len;
+
+    const name = rest[0..end];
+    if (name.len == 0) return null;
+    if (std.mem.lastIndexOfScalar(u8, name, '.')) |dot| {
+        const tbl = name[dot + 1 ..];
+        return if (tbl.len > 0) tbl else null;
+    }
+    return name;
+}
+
+fn extractInsertTableName(line: []const u8) ?[]const u8 {
+    const prefix = "INSERT INTO ";
+    if (!startsWithCI(line, prefix)) return null;
+    var rest = line[prefix.len..];
+    rest = std.mem.trimStart(u8, rest, " \t");
+    if (rest.len == 0) return null;
+
+    if (rest[0] == '`' or rest[0] == '"' or rest[0] == '\'') {
+        const q = rest[0];
+        rest = rest[1..];
+        const end = std.mem.indexOfScalar(u8, rest, q) orelse return null;
+        return if (end > 0) rest[0..end] else null;
+    }
+
+    const end = for (rest, 0..) |c, i| {
+        if (c == ' ' or c == '\t' or c == '(' or c == ';') break i;
+    } else rest.len;
+    return if (end > 0) rest[0..end] else null;
+}
+
+fn extractCopyTableName(line: []const u8) ?[]const u8 {
+    const prefix = "COPY ";
+    if (!startsWithCI(line, prefix)) return null;
+    var rest = line[prefix.len..];
+    rest = std.mem.trimStart(u8, rest, " \t");
+    if (rest.len == 0) return null;
+
+    const end = for (rest, 0..) |c, i| {
+        if (c == ' ' or c == '\t' or c == '(' or c == ';') break i;
+    } else rest.len;
+
+    const name = rest[0..end];
+    if (name.len == 0) return null;
+    if (std.mem.lastIndexOfScalar(u8, name, '.')) |dot| {
+        const tbl = name[dot + 1 ..];
+        return if (tbl.len > 0) tbl else null;
+    }
+    return name;
+}
+
+const CACHE_SESSION_MARKERS = [_][]const u8{ "session", "cache", "queue", "token", "lock" };
+const LOG_AUDIT_MARKERS = [_][]const u8{ "log", "audit", "event", "history", "track" };
+
+fn classifyTable(t: *TableInfo) void {
+    var buf: [128]u8 = undefined;
+    const len = @min(t.name.len, buf.len);
+    for (t.name[0..len], 0..) |c, i| buf[i] = std.ascii.toLower(c);
+    const lower = buf[0..len];
+    for (CACHE_SESSION_MARKERS) |m| {
+        if (std.mem.indexOf(u8, lower, m) != null) { t.is_cache_or_session = true; break; }
+    }
+    for (LOG_AUDIT_MARKERS) |m| {
+        if (std.mem.indexOf(u8, lower, m) != null) { t.is_log_or_audit = true; break; }
+    }
+}
+
+// ============================================================
+// LOG SCANNER
+// ============================================================
+
+pub const LogSeverity = enum {
+    fatal,
+    err,
+    warn,
+    info,
+    unknown,
+
+    pub fn displayName(self: LogSeverity) []const u8 {
+        return switch (self) {
+            .fatal => "FATAL",
+            .err => "ERROR",
+            .warn => "WARN",
+            .info => "INFO",
+            .unknown => "UNKNOWN",
+        };
+    }
+};
+
+pub const LogPattern = struct {
+    text: []u8,
+    severity: LogSeverity,
+    count: u64,
+
+    fn deinit(self: *LogPattern, gpa: std.mem.Allocator) void {
+        gpa.free(self.text);
+    }
+};
+
+pub const LogScanResult = struct {
+    path: []u8,
+    total_lines: u64,
+    error_count: u64,
+    warn_count: u64,
+    patterns: std.ArrayList(LogPattern),
+
+    pub fn deinit(self: *LogScanResult, gpa: std.mem.Allocator) void {
+        gpa.free(self.path);
+        for (self.patterns.items) |*p| p.deinit(gpa);
+        self.patterns.deinit(gpa);
+    }
+
+    pub fn writeMarkdown(self: *const LogScanResult, out: *std.Io.Writer) !void {
+        try out.print("# Log Analysis: {s}\n\n", .{fileBasename(self.path)});
+        try out.print("## Overview\n\n", .{});
+        try out.print("- **Total lines:** {d}\n", .{self.total_lines});
+        try out.print("- **Errors:** {d}\n", .{self.error_count});
+        try out.print("- **Warnings:** {d}\n\n", .{self.warn_count});
+
+        if (self.patterns.items.len > 0) {
+            try out.print("## Top Error Patterns\n\n", .{});
+            for (self.patterns.items, 0..) |p, i| {
+                const max_len: usize = 120;
+                const display = if (p.text.len > max_len) p.text[0..max_len] else p.text;
+                try out.print("{d}. **{s}** (×{d}): {s}\n", .{
+                    i + 1, p.severity.displayName(), p.count, display,
+                });
+            }
+            try out.print("\n", .{});
+
+            try out.print("## Recommendations\n\n", .{});
+            var repeat_count: usize = 0;
+            var fatal_count: u64 = 0;
+            for (self.patterns.items) |p| {
+                if (p.count > 1) repeat_count += 1;
+                if (p.severity == .fatal) fatal_count += p.count;
+            }
+            if (repeat_count > 0) {
+                const plural: []const u8 = if (repeat_count == 1) "" else "s";
+                try out.print("- **Repeat failures:** {d} pattern{s} appear more than once — investigate root cause\n", .{
+                    repeat_count, plural,
+                });
+            }
+            if (fatal_count > 0) {
+                try out.print("- **FATAL events:** {d} detected — review immediately\n", .{fatal_count});
+            }
+            try out.print("\n", .{});
+        } else {
+            try out.print("No error or warning patterns found.\n\n", .{});
+        }
+    }
+
+    pub fn writeJson(self: *const LogScanResult, out: *std.Io.Writer) !void {
+        try out.print("{{\n", .{});
+        try out.print("  \"path\": \"", .{});
+        try writeJsonStr(out, self.path);
+        try out.print("\",\n", .{});
+        try out.print("  \"totalLines\": {d},\n", .{self.total_lines});
+        try out.print("  \"errorCount\": {d},\n", .{self.error_count});
+        try out.print("  \"warnCount\": {d},\n", .{self.warn_count});
+        try out.print("  \"topPatterns\": [\n", .{});
+        for (self.patterns.items, 0..) |p, i| {
+            try out.print("    {{\"severity\": \"{s}\", \"count\": {d}, \"pattern\": \"", .{
+                p.severity.displayName(), p.count,
+            });
+            try writeJsonStr(out, p.text);
+            try out.print("\"}}", .{});
+            if (i + 1 < self.patterns.items.len) try out.print(",", .{});
+            try out.print("\n", .{});
+        }
+        try out.print("  ]\n", .{});
+        try out.print("}}\n", .{});
+    }
+};
+
+pub fn scanLog(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !LogScanResult {
+    const stored_path = try gpa.dupe(u8, path);
+    errdefer gpa.free(stored_path);
+
+    const file = try std.Io.Dir.openFileAbsolute(io, path, .{});
+    defer file.close(io);
+    var read_buf: [4096]u8 = undefined;
+    var r = file.reader(io, &read_buf);
+    const content = try r.interface.allocRemaining(gpa, .limited(50 * 1024 * 1024));
+    defer gpa.free(content);
+
+    var total_lines: u64 = 0;
+    var error_count: u64 = 0;
+    var warn_count: u64 = 0;
+
+    const NormLine = struct { text: []const u8, severity: LogSeverity };
+    var norm_lines: std.ArrayList(NormLine) = .empty;
+    defer norm_lines.deinit(gpa);
+
+    var line_iter = std.mem.splitScalar(u8, content, '\n');
+    while (line_iter.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+        total_lines += 1;
+
+        const sev = detectSeverity(trimmed);
+        switch (sev) {
+            .fatal, .err => {
+                error_count += 1;
+                try norm_lines.append(gpa, .{ .text = stripTimestamp(trimmed), .severity = sev });
+            },
+            .warn => {
+                warn_count += 1;
+                try norm_lines.append(gpa, .{ .text = stripTimestamp(trimmed), .severity = sev });
+            },
+            .info, .unknown => {},
+        }
+    }
+
+    std.mem.sort(NormLine, norm_lines.items, {}, struct {
+        fn lt(_: void, a: NormLine, b: NormLine) bool {
+            return std.mem.order(u8, a.text, b.text) == .lt;
+        }
+    }.lt);
+
+    const PatternEntry = struct { text: []const u8, severity: LogSeverity, count: u64 };
+    var groups: std.ArrayList(PatternEntry) = .empty;
+    defer groups.deinit(gpa);
+
+    {
+        var i: usize = 0;
+        while (i < norm_lines.items.len) {
+            const cur = norm_lines.items[i];
+            var j = i + 1;
+            while (j < norm_lines.items.len and std.mem.eql(u8, norm_lines.items[j].text, cur.text)) {
+                j += 1;
+            }
+            try groups.append(gpa, .{ .text = cur.text, .severity = cur.severity, .count = j - i });
+            i = j;
+        }
+    }
+
+    std.mem.sort(PatternEntry, groups.items, {}, struct {
+        fn gt(_: void, a: PatternEntry, b: PatternEntry) bool {
+            return a.count > b.count;
+        }
+    }.gt);
+
+    var result = LogScanResult{
+        .path = stored_path,
+        .total_lines = total_lines,
+        .error_count = error_count,
+        .warn_count = warn_count,
+        .patterns = .empty,
+    };
+    errdefer {
+        for (result.patterns.items) |*p| p.deinit(gpa);
+        result.patterns.deinit(gpa);
+    }
+
+    const top_n = @min(groups.items.len, 20);
+    for (groups.items[0..top_n]) |g| {
+        const text_owned = try gpa.dupe(u8, g.text);
+        errdefer gpa.free(text_owned);
+        try result.patterns.append(gpa, .{
+            .text = text_owned,
+            .severity = g.severity,
+            .count = g.count,
+        });
+    }
+
+    return result;
+}
+
+fn detectSeverity(line: []const u8) LogSeverity {
+    // Check explicit markers first so [ERROR] PHP Fatal error: → ERROR, not FATAL
+    if (containsCI(line, "[FATAL]") or containsCI(line, "FATAL:") or
+        containsCI(line, "[CRITICAL]") or containsCI(line, "CRITICAL:") or
+        containsCI(line, "[EMERG]") or containsCI(line, "EMERG:"))
+    {
+        return .fatal;
+    }
+    if (containsCI(line, "[ERROR]") or containsCI(line, "ERROR:") or
+        containsCI(line, "Traceback") or containsCI(line, "STDERR"))
+    {
+        return .err;
+    }
+    if (containsCI(line, "[WARN]") or containsCI(line, "WARN:") or
+        containsCI(line, "[WARNING]") or containsCI(line, "WARNING:"))
+    {
+        return .warn;
+    }
+    // Broader fallbacks (may match words inside messages)
+    if (containsCI(line, "FATAL") or containsCI(line, "CRITICAL")) return .fatal;
+    if (containsCI(line, "ERROR") or containsCI(line, "Exception") or containsCI(line, "EXCEPTION")) return .err;
+    if (containsCI(line, "WARN")) return .warn;
+    if (containsCI(line, "INFO") or containsCI(line, "DEBUG") or containsCI(line, "NOTICE")) return .info;
+    return .unknown;
+}
+
+fn containsCI(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len > haystack.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        var match = true;
+        for (needle, 0..) |nc, j| {
+            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(nc)) {
+                match = false;
+                break;
+            }
+        }
+        if (match) return true;
+    }
+    return false;
+}
+
+fn stripTimestamp(line: []const u8) []const u8 {
+    var i: usize = 0;
+    if (i < line.len and line[i] == '[') i += 1;
+    if (i < line.len and std.ascii.isDigit(line[i])) {
+        const ts_start = i;
+        while (i < line.len) {
+            const c = line[i];
+            if (std.ascii.isDigit(c) or c == '/' or c == '-' or c == ':' or
+                c == '.' or c == 'T' or c == 'Z' or c == '+' or c == ' ')
+            {
+                i += 1;
+            } else break;
+        }
+        if (i - ts_start >= 8) {
+            if (i < line.len and line[i] == ']') i += 1;
+            while (i < line.len and (line[i] == ' ' or line[i] == '\t')) i += 1;
+            return line[i..];
+        }
+    }
+    return line;
+}
