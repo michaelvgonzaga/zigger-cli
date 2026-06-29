@@ -15,8 +15,18 @@ pub fn main(init: std.process.Init) !void {
     const out = &out_writer.interface;
 
     if (args.len < 2) {
-        try printUsage(err);
-        std.process.exit(1);
+        try printUsage(out);
+        try out.flush();
+        return;
+    }
+
+    if (std.mem.eql(u8, args[1], "help") or
+        std.mem.eql(u8, args[1], "--help") or
+        std.mem.eql(u8, args[1], "-h"))
+    {
+        try printUsage(out);
+        try out.flush();
+        return;
     }
 
     const home = init.environ_map.get("HOME") orelse "/tmp";
