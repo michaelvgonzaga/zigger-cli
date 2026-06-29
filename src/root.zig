@@ -318,6 +318,12 @@ fn extractDeps(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, framework: F
         .go => try extractGoDeps(gpa, io, dir, result),
         .rust => try extractRustDeps(gpa, io, dir, result),
         .ruby => try extractRubyDeps(gpa, io, dir, result),
+        .php => try extractPhpDeps(gpa, io, dir, result),
+        .zig_lang => try extractZigDeps(gpa, io, dir, result),
+        .java_maven => try extractMavenDeps(gpa, io, dir, result),
+        .java_gradle => try extractGradleDeps(gpa, io, dir, result),
+        .flutter => try extractFlutterDeps(gpa, io, dir, result),
+        .elixir => try extractElixirDeps(gpa, io, dir, result),
         else => {},
     }
 }
@@ -355,17 +361,250 @@ fn extractNodeDeps(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, result: 
 }
 
 fn extractPythonDeps(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, result: *ScanResult) !void {
-    const content = (try readFileAlloc(gpa, io, dir, "requirements.txt")) orelse return;
+    if (try readFileAlloc(gpa, io, dir, "requirements.txt")) |content| {
+        defer gpa.free(content);
+        var lines = std.mem.splitScalar(u8, content, '\n');
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, " \t\r");
+            if (trimmed.len == 0 or trimmed[0] == '#') continue;
+            const end = for (trimmed, 0..) |c, i| {
+                if (c == '>' or c == '<' or c == '=' or c == '!' or c == '[' or c == ';') break i;
+            } else trimmed.len;
+            const name = std.mem.trimEnd(u8, trimmed[0..end], " \t");
+            if (name.len == 0) continue;
+            try result.dependencies.append(gpa, .{ .name = try gpa.dupe(u8, name), .dev = false });
+        }
+        return;
+    }
+    // Fall back to pyproject.toml (PEP 621 or Poetry)
+    const content = (try readFileAlloc(gpa, io, dir, "pyproject.toml")) orelse return;
     defer gpa.free(content);
-
+    // Distinguish PEP 621 sections (list-style deps) from Poetry sections (key-value deps)
+    const SectionKind = enum { none, pep621_deps, pep621_dev, poetry_deps, poetry_dev };
+    var section: SectionKind = .none;
+    var in_list = false;
     var lines = std.mem.splitScalar(u8, content, '\n');
     while (lines.next()) |line| {
         const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (trimmed.len == 0 or trimmed[0] == '#') continue;
-        const end = for (trimmed, 0..) |c, i| {
-            if (c == '>' or c == '<' or c == '=' or c == '!' or c == '[' or c == ';') break i;
-        } else trimmed.len;
-        const name = std.mem.trimEnd(u8, trimmed[0..end], " \t");
+        if (std.mem.eql(u8, trimmed, "[project]")) {
+            section = .pep621_deps; in_list = false; continue;
+        }
+        if (std.mem.eql(u8, trimmed, "[tool.poetry.dependencies]")) {
+            section = .poetry_deps; in_list = false; continue;
+        }
+        if (std.mem.eql(u8, trimmed, "[tool.poetry.dev-dependencies]") or
+            std.mem.eql(u8, trimmed, "[tool.poetry.group.dev.dependencies]"))
+        {
+            section = .poetry_dev; in_list = false; continue;
+        }
+        if (trimmed.len > 0 and trimmed[0] == '[') {
+            section = .none; in_list = false; continue;
+        }
+        if (section == .none) continue;
+        // PEP 621: dependencies = ["pkg", ...]
+        if (section == .pep621_deps or section == .pep621_dev) {
+            if (std.mem.startsWith(u8, trimmed, "dependencies") and std.mem.indexOf(u8, trimmed, "[") != null) {
+                in_list = true; continue;
+            }
+            if (!in_list) continue;
+            if (std.mem.indexOf(u8, trimmed, "]") != null) { in_list = false; continue; }
+            const q_start = std.mem.indexOfScalar(u8, trimmed, '"') orelse
+                (std.mem.indexOfScalar(u8, trimmed, '\'') orelse continue);
+            const q = trimmed[q_start];
+            const rest = trimmed[q_start + 1 ..];
+            const q_end = std.mem.indexOfScalar(u8, rest, q) orelse continue;
+            const pkg = rest[0..q_end];
+            const name_end = for (pkg, 0..) |c, i| {
+                if (c == '>' or c == '<' or c == '=' or c == '!' or c == '[' or c == ';') break i;
+            } else pkg.len;
+            const name = std.mem.trim(u8, pkg[0..name_end], " \t");
+            if (name.len == 0 or std.mem.eql(u8, name, "python")) continue;
+            try result.dependencies.append(gpa, .{ .name = try gpa.dupe(u8, name), .dev = section == .pep621_dev });
+            continue;
+        }
+        // Poetry: name = "version"
+        if (section == .poetry_deps or section == .poetry_dev) {
+            const eq = std.mem.indexOfScalar(u8, trimmed, '=') orelse continue;
+            const name = std.mem.trim(u8, trimmed[0..eq], " \t");
+            if (name.len == 0 or name[0] == '[' or std.mem.eql(u8, name, "python")) continue;
+            try result.dependencies.append(gpa, .{ .name = try gpa.dupe(u8, name), .dev = section == .poetry_dev });
+        }
+    }
+}
+
+fn extractPhpDeps(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, result: *ScanResult) !void {
+    const content = (try readFileAlloc(gpa, io, dir, "composer.json")) orelse return;
+    defer gpa.free(content);
+    const parsed = std.json.parseFromSlice(std.json.Value, gpa, content, .{}) catch return;
+    defer parsed.deinit();
+    if (parsed.value != .object) return;
+    const kinds = [_]struct { key: []const u8, dev: bool }{
+        .{ .key = "require", .dev = false },
+        .{ .key = "require-dev", .dev = true },
+    };
+    for (kinds) |kind| {
+        const deps = parsed.value.object.get(kind.key) orelse continue;
+        if (deps != .object) continue;
+        var it = deps.object.iterator();
+        while (it.next()) |entry| {
+            const name = entry.key_ptr.*;
+            if (std.mem.eql(u8, name, "php") or std.mem.startsWith(u8, name, "ext-")) continue;
+            try result.dependencies.append(gpa, .{ .name = try gpa.dupe(u8, name), .dev = kind.dev });
+        }
+    }
+}
+
+fn extractZigDeps(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, result: *ScanResult) !void {
+    const content = (try readFileAlloc(gpa, io, dir, "build.zig.zon")) orelse return;
+    defer gpa.free(content);
+    var in_deps = false;
+    var depth: u32 = 0;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (!in_deps) {
+            if (std.mem.indexOf(u8, trimmed, ".dependencies") != null and
+                std.mem.indexOf(u8, trimmed, "= .{") != null)
+            {
+                in_deps = true;
+                depth = 1;
+            }
+            continue;
+        }
+        // At depth 1, a direct child looks like .Name = .{
+        if (depth == 1 and trimmed.len > 1 and trimmed[0] == '.') {
+            const rest = trimmed[1..];
+            const end = for (rest, 0..) |c, i| {
+                if (!std.ascii.isAlphanumeric(c) and c != '_') break i;
+            } else rest.len;
+            const name = rest[0..end];
+            if (name.len > 0) {
+                try result.dependencies.append(gpa, .{ .name = try gpa.dupe(u8, name), .dev = false });
+            }
+        }
+        for (trimmed) |c| {
+            if (c == '{') {
+                depth += 1;
+            } else if (c == '}') {
+                if (depth > 0) depth -= 1;
+                if (depth == 0) { in_deps = false; break; }
+            }
+        }
+    }
+}
+
+fn extractMavenDeps(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, result: *ScanResult) !void {
+    const content = (try readFileAlloc(gpa, io, dir, "pom.xml")) orelse return;
+    defer gpa.free(content);
+    var in_dep = false;
+    var artifact: ?[]const u8 = null;
+    var is_test = false;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (containsCI(trimmed, "<dependency>") and !containsCI(trimmed, "<dependencies>")) {
+            in_dep = true;
+            artifact = null;
+            is_test = false;
+            continue;
+        }
+        if (containsCI(trimmed, "</dependency>")) {
+            if (in_dep) {
+                if (artifact) |name| {
+                    try result.dependencies.append(gpa, .{ .name = try gpa.dupe(u8, name), .dev = is_test });
+                }
+            }
+            in_dep = false;
+            artifact = null;
+            continue;
+        }
+        if (!in_dep) continue;
+        if (std.mem.indexOf(u8, trimmed, "<artifactId>")) |start| {
+            const after = start + "<artifactId>".len;
+            if (std.mem.indexOf(u8, trimmed[after..], "</artifactId>")) |end| {
+                artifact = trimmed[after .. after + end];
+            }
+        }
+        if (std.mem.indexOf(u8, trimmed, "<scope>test</scope>") != null) {
+            is_test = true;
+        }
+    }
+}
+
+fn extractGradleDeps(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, result: *ScanResult) !void {
+    const content = (try readFileAlloc(gpa, io, dir, "build.gradle")) orelse
+        (try readFileAlloc(gpa, io, dir, "build.gradle.kts")) orelse return;
+    defer gpa.free(content);
+    const prod_configs = [_][]const u8{ "implementation", "api", "runtimeOnly", "compileOnly" };
+    const dev_configs = [_][]const u8{ "testImplementation", "testApi", "testRuntimeOnly", "testCompileOnly" };
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        var is_dev = false;
+        var matched = false;
+        for (prod_configs) |cfg| {
+            if (std.mem.startsWith(u8, trimmed, cfg)) { matched = true; break; }
+        }
+        if (!matched) {
+            for (dev_configs) |cfg| {
+                if (std.mem.startsWith(u8, trimmed, cfg)) { matched = true; is_dev = true; break; }
+            }
+        }
+        if (!matched) continue;
+        // Extract from 'group:artifact:version' or "group:artifact:version"
+        const q = for (trimmed) |c| { if (c == '\'' or c == '"') break c; } else continue;
+        const q_start = std.mem.indexOfScalar(u8, trimmed, q) orelse continue;
+        const rest = trimmed[q_start + 1 ..];
+        const q_end = std.mem.indexOfScalar(u8, rest, q) orelse continue;
+        const coord = rest[0..q_end];
+        // Use group:artifact as the name (drop :version)
+        const first_colon = std.mem.indexOfScalar(u8, coord, ':') orelse coord.len;
+        const after_group = if (first_colon < coord.len) coord[first_colon + 1 ..] else coord;
+        const second_colon = std.mem.indexOfScalar(u8, after_group, ':') orelse after_group.len;
+        const artifact = after_group[0..second_colon];
+        if (artifact.len == 0) continue;
+        try result.dependencies.append(gpa, .{ .name = try gpa.dupe(u8, artifact), .dev = is_dev });
+    }
+}
+
+fn extractFlutterDeps(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, result: *ScanResult) !void {
+    const content = (try readFileAlloc(gpa, io, dir, "pubspec.yaml")) orelse return;
+    defer gpa.free(content);
+    const Section = enum { none, deps, dev_deps };
+    var section: Section = .none;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const raw = std.mem.trimEnd(u8, line, "\r");
+        const trimmed = std.mem.trim(u8, raw, " \t");
+        if (std.mem.eql(u8, trimmed, "dependencies:")) { section = .deps; continue; }
+        if (std.mem.eql(u8, trimmed, "dev_dependencies:")) { section = .dev_deps; continue; }
+        if (section == .none) continue;
+        if (trimmed.len == 0) continue;
+        // Non-indented non-empty line = new top-level key
+        if (raw.len > 0 and raw[0] != ' ' and raw[0] != '\t') { section = .none; continue; }
+        // Two-space indent = package name; four-space+ = value under that package
+        const indent = for (raw, 0..) |c, i| { if (c != ' ' and c != '\t') break i; } else raw.len;
+        if (indent != 2) continue;
+        const colon = std.mem.indexOfScalar(u8, trimmed, ':') orelse continue;
+        const name = std.mem.trim(u8, trimmed[0..colon], " \t");
+        if (name.len == 0 or std.mem.eql(u8, name, "flutter")) continue;
+        try result.dependencies.append(gpa, .{ .name = try gpa.dupe(u8, name), .dev = section == .dev_deps });
+    }
+}
+
+fn extractElixirDeps(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, result: *ScanResult) !void {
+    const content = (try readFileAlloc(gpa, io, dir, "mix.exs")) orelse return;
+    defer gpa.free(content);
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        // Match {:package_name, ...}
+        if (!std.mem.startsWith(u8, trimmed, "{:")) continue;
+        const rest = trimmed[2..];
+        const end = for (rest, 0..) |c, i| {
+            if (!std.ascii.isAlphanumeric(c) and c != '_') break i;
+        } else rest.len;
+        const name = rest[0..end];
         if (name.len == 0) continue;
         try result.dependencies.append(gpa, .{ .name = try gpa.dupe(u8, name), .dev = false });
     }

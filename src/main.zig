@@ -1,6 +1,8 @@
 const std = @import("std");
 const plowman = @import("plowman");
 
+const VERSION = "1.1.0";
+
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
@@ -25,6 +27,15 @@ pub fn main(init: std.process.Init) !void {
         std.mem.eql(u8, args[1], "-h"))
     {
         try printUsage(out);
+        try out.flush();
+        return;
+    }
+
+    if (std.mem.eql(u8, args[1], "version") or
+        std.mem.eql(u8, args[1], "--version") or
+        std.mem.eql(u8, args[1], "-v"))
+    {
+        try out.print("plowman {s}\n", .{VERSION});
         try out.flush();
         return;
     }
