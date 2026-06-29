@@ -16,7 +16,14 @@ Every command outputs both Markdown (human-readable) and JSON (`--json`, for AI 
 
 ## Install
 
-Requires Zig 0.16, ripgrep, fd, and jq.
+```bash
+brew tap michaelvgonzaga/foreman
+brew install plowman
+```
+
+Dependencies (ripgrep, fd, jq) are installed automatically. Requires macOS on Apple Silicon.
+
+**Build from source**
 
 ```bash
 brew install zig ripgrep fd jq
